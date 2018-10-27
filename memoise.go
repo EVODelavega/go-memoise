@@ -20,11 +20,26 @@ type centry struct {
 	ttl  time.Duration
 }
 
+type vcentry struct {
+	item *citem
+	mu   *sync.RWMutex
+	ttl  time.Duration
+}
+
 type cache struct {
 	mu              *sync.RWMutex      // duh, we need mutex because... see below
 	entries         map[string]*centry // let's not use sync.Map, it's crap anyway
+	vCache          *valCache
 	defaultCT       CacheType
 	defaultRT       RefreshType
+	defaultTTL      time.Duration
+	checkDuplicates DuplicateCheck
+}
+
+// cache for values
+type valCache struct {
+	mu              *sync.RWMutex
+	entries         map[string]*vcentry
 	defaultTTL      time.Duration
 	checkDuplicates DuplicateCheck
 }
@@ -38,11 +53,20 @@ func newCache() *cache {
 		defaultRT:       RefreshOnAccess,
 		defaultTTL:      ValueExpiryDefault,
 		checkDuplicates: NoDuplicateCheck,
+		vCache: &valCache{
+			mu:              &sync.RWMutex{},
+			entries:         map[string]*vcentry{},
+			defaultTTL:      ValueExpiryDefault,
+			checkDuplicates: NoDuplicateCheck,
+		},
 	}
 }
 
 func (c *cache) newEntry(cb Call) *centry {
 	return &centry{
+		item: &citem{
+			expires: time.Time{},
+		},
 		mu:  &sync.RWMutex{},
 		cb:  cb,
 		ct:  c.defaultCT,
@@ -78,6 +102,13 @@ func (c *cache) Set(key string, call Call, opts ...EntryConfig) (interface{}, er
 	i, err := c.set(key, call, opts...)
 	c.mu.RUnlock()
 	return i, err
+}
+
+func (c *cache) Unset(key string) {
+	c.mu.Lock()
+	// delete - it's a no-op if the element isn't set, no need to check
+	delete(c.entries, key)
+	c.mu.Unlock()
 }
 
 // CAS - Check & Set, same as set but "atomic", returns DuplicateEntryErr if value already exists
@@ -122,6 +153,16 @@ func (c *cache) Refresh(k string) (interface{}, error) {
 	return v, err
 }
 
+func (c *cache) autoRefresh(key string, val interface{}, err error) {
+	ce := c.entries[key] // this is guaranteed to work -> the janitor calls this, the key exists
+	if err == nil || ce.ct == CacheAll {
+		ce.item.val = val
+		ce.item.err = err
+		ce.item.expires = time.Now().Add(ce.ttl)
+	}
+	// all others should be a no-op, they cannot be auto-refreshed
+}
+
 // Get - get cached values
 func (c *cache) Get(key string) (interface{}, error) {
 	c.mu.RLock()
@@ -144,6 +185,10 @@ func (c *cache) Get(key string) (interface{}, error) {
 	}
 	// ignore RefreshAsync for the time being
 	return c.Refresh(key)
+}
+
+func (c *cache) Value() ValueCache {
+	return c.vCache
 }
 
 func (c *cache) setWithCheck(k string, cb Call, opts ...EntryConfig) (interface{}, error) {
@@ -183,4 +228,135 @@ func (c *cache) get(k string) (*centry, error) {
 		return nil, KeyNotFoundErr
 	}
 	return e, nil
+}
+
+// value cache implementation:
+
+func (c *valCache) Get(key string) (interface{}, error) {
+	c.mu.RLock()
+	e, err := c.get(key)
+	if err != nil {
+		if e != nil {
+			return e.item.val, err
+		}
+		return nil, err
+	}
+	// get the cached value
+	ret := e.item.val
+	c.mu.RUnlock()
+	return ret, nil
+}
+
+func (c *valCache) Set(key string, value interface{}, opts ...EntryConfig) error {
+	c.mu.Lock()
+	if c.checkDuplicates == CheckDuplicate {
+		if _, ok := c.entries[key]; ok {
+			c.mu.Unlock()
+			return DuplicateEntryErr
+		}
+	}
+	c.set(key, value, opts...)
+	c.mu.Unlock()
+	return nil
+}
+
+func (c *valCache) Refresh(key string) (interface{}, error) {
+	c.mu.RLock()
+	e, err := c.get(key)
+	if err != nil {
+		c.mu.RUnlock()
+		return nil, err
+	}
+	e.mu.Lock()
+	ret := e.item.val
+	// this is a pointless call
+	if e.ttl == ValueExpiryNever {
+		e.mu.Unlock()
+		c.mu.RUnlock()
+		return ret, nil
+	}
+	e.item.expires = time.Now().Add(e.ttl)
+	e.mu.Unlock()
+	c.mu.RUnlock()
+	return ret, nil
+}
+
+func (c *valCache) Has(key string) bool {
+	c.mu.RLock()
+	_, ok := c.entries[key]
+	c.mu.RUnlock()
+	return ok
+}
+
+func (c *valCache) CAS(key string, value interface{}, opts ...EntryConfig) (interface{}, error) {
+	c.mu.Lock()
+	if e, err := c.get(key); err == nil {
+		// we have a duplicate
+		// return existing entry + error
+		return e.item.val, DuplicateEntryErr
+	}
+	delete(c.entries, key)
+	c.set(key, value, opts...)
+	c.mu.Unlock()
+	return value, nil
+}
+
+func (c *valCache) Unset(key string) {
+	c.mu.Lock()
+	delete(c.entries, key)
+	c.mu.Unlock()
+}
+
+func (c *valCache) get(key string) (*vcentry, error) {
+	e, ok := c.entries[key]
+	if !ok {
+		return nil, KeyNotFoundErr
+	}
+	if !e.item.expires.IsZero() && e.item.expires.Before(time.Now()) {
+		return e, ValueExpiredErr
+	}
+	return e, nil
+}
+
+func (c *valCache) set(key string, value interface{}, opts ...EntryConfig) {
+	// create entry
+	e := &vcentry{
+		item: &citem{
+			val:     value,
+			expires: time.Time{},
+		},
+		mu:  &sync.RWMutex{},
+		ttl: c.defaultTTL,
+	}
+	// configure
+	for _, o := range opts {
+		o(e)
+	}
+	// set TTL if value has expiry
+	if e.ttl != ValueExpiryNever {
+		e.item.expires = time.Now().Add(e.ttl)
+	}
+	c.entries[key] = e
+}
+
+// entryConfigInterface
+
+func (e *centry) setCT(ct CacheType) {
+	e.ct = ct
+}
+
+func (e *centry) setTTL(ttl time.Duration) {
+	e.ttl = ttl
+}
+
+func (e *centry) SetRefreshType(rt RefreshType) {
+	e.rt = rt
+}
+
+func (v *vcentry) setCT(_ CacheType) {}
+
+func (v *vcentry) SetRefreshType(_ RefreshType) {}
+
+func (v *vcentry) setTTL(ttl time.Duration) {
+	v.ttl = ttl
 }

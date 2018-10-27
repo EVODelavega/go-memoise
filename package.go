@@ -32,6 +32,8 @@ const (
 	// error. Cache will not be refreshed until an explicit refresh call is made. This call is blocking
 	// both for caller and any concurrent reads!
 	RefreshExplicit
+	// NoRefresh - removes values from cache on expiry, works similarly to RefreshAsync without the refresh
+	NoRefresh
 )
 
 const (
@@ -52,7 +54,7 @@ const (
 type Call func() (interface{}, error)
 
 // EntryConfig - Type to override default config for a specific entry (used as varargs in Set func)
-type EntryConfig func(*centry)
+type EntryConfig func(cacheItem)
 
 // CacheConf - Variadic arg to set default config for cache
 type CacheConf func(*cache)
@@ -78,6 +80,29 @@ type Cache interface {
 	CAS(key string, call Call, opts ...EntryConfig) (interface{}, error)
 	// Get - Get cached values
 	Get(key string) (interface{}, error)
+	// Unset - Remove given entry from cache
+	Unset(key string)
+	// Value - access simple key - value cache
+	Value() ValueCache
+}
+
+// ValueCache - interface for cache - similar to callback-based cache
+// only for direct value storage (aka simple k-v cache)
+type ValueCache interface {
+	Set(key string, value interface{}, opts ...EntryConfig) error
+	Get(key string) (interface{}, error)
+	Refresh(key string) (interface{}, error)
+	Has(key string) bool
+	CAS(key string, value interface{}, opts ...EntryConfig) (interface{}, error)
+	Unset(key string)
+}
+
+// cacheItem - interface for both centry and vcentry
+// so they can be configured using the EntryConfig args
+type cacheItem interface {
+	setTTL(ttl time.Duration)
+	setCT(ct CacheType)
+	SetRefreshType(rt RefreshType)
 }
 
 // DefaultTTL - Set cache-level default TTL
@@ -110,22 +135,22 @@ func DefaultRefreshType(rt RefreshType) CacheConf {
 
 // SetCacheType - Override cache-type on entry level
 func SetCacheType(ct CacheType) EntryConfig {
-	return func(e *centry) {
-		e.ct = ct
+	return func(e cacheItem) {
+		e.setCT(ct)
 	}
 }
 
 // SetRefreshType - Override refresh type on entry level
 func SetRefreshType(rt RefreshType) EntryConfig {
-	return func(e *centry) {
-		e.rt = rt
+	return func(e cacheItem) {
+		e.SetRefreshType(rt)
 	}
 }
 
 // SetTTL - override TTL on entry level
 func SetTTL(ttl time.Duration) EntryConfig {
-	return func(e *centry) {
-		e.ttl = ttl
+	return func(e cacheItem) {
+		e.setTTL(ttl)
 	}
 }
 
@@ -135,5 +160,7 @@ func New(opts ...CacheConf) Cache {
 	for _, o := range opts {
 		o(c)
 	}
+	c.vCache.defaultTTL = c.defaultTTL
+	c.vCache.checkDuplicates = c.checkDuplicates
 	return c
 }
