@@ -98,9 +98,9 @@ func (c *cache) Set(key string, call Call, opts ...EntryConfig) (interface{}, er
 	// Obtain read lock, even though we're writing. This lock is not really doing anything
 	// but is here to defend against race conditions in case CAS is called with the same key
 	// setWithCheck obtains full lock, RLock allows for reads, still, while a set will be atomic
-	c.mu.RLock()
+	c.mu.Lock()
 	i, err := c.set(key, call, opts...)
-	c.mu.RUnlock()
+	c.mu.Unlock()
 	return i, err
 }
 
@@ -128,8 +128,8 @@ func (c *cache) Has(key string) bool {
 func (c *cache) Refresh(k string) (interface{}, error) {
 	c.mu.RLock()
 	ce, err := c.get(k)
+	c.mu.RUnlock()
 	if err != nil {
-		c.mu.RUnlock()
 		return nil, err
 	}
 	ce.mu.Lock()
@@ -137,7 +137,9 @@ func (c *cache) Refresh(k string) (interface{}, error) {
 	if err == nil || ce.ct == CacheAll {
 		ce.item.val = v
 		ce.item.err = err
-		ce.item.expires = time.Now().Add(ce.ttl)
+		if ce.ttl != ValueExpiryNever {
+			ce.item.expires = time.Now().Add(ce.ttl)
+		}
 		ce.mu.Unlock()
 		return v, err
 	}
@@ -167,22 +169,24 @@ func (c *cache) autoRefresh(key string, val interface{}, err error) {
 func (c *cache) Get(key string) (interface{}, error) {
 	c.mu.RLock()
 	ce, err := c.get(key)
+	c.mu.RUnlock()
 	if err != nil {
-		c.mu.RUnlock()
 		return nil, err
 	}
 	ce.mu.RLock()
 	v, err, exp := ce.item.val, ce.item.err, ce.item.expires
-	ce.mu.RUnlock()
 	// value is still valid, return and be done with it
 	if exp.IsZero() || exp.After(time.Now()) {
+		ce.mu.RUnlock()
 		// this is really optimistic, we're not handling errors correctly ATM
 		return v, err
 	}
 	// value has expired
 	if ce.rt == RefreshExplicit {
+		ce.mu.RUnlock()
 		return v, ValueExpiredErr
 	}
+	ce.mu.RUnlock()
 	// ignore RefreshAsync for the time being
 	return c.Refresh(key)
 }
@@ -237,8 +241,10 @@ func (c *valCache) Get(key string) (interface{}, error) {
 	e, err := c.get(key)
 	if err != nil {
 		if e != nil {
+			c.mu.RUnlock()
 			return e.item.val, err
 		}
+		c.mu.RUnlock()
 		return nil, err
 	}
 	// get the cached value
