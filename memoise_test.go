@@ -2,6 +2,7 @@ package memoise
 
 import (
 	"testing"
+	"time"
 )
 
 func TestCacheScalarValueSet(t *testing.T) {
@@ -27,6 +28,30 @@ func TestCacheScalarValueSet(t *testing.T) {
 		}
 		if got != v {
 			t.Fatalf("expected %s to return %v, got %v", k, v, got)
+		}
+	}
+
+	// check CAS behaviour:
+	for k, v := range data {
+		if _, err := cache.Value().CAS(k, v); err == nil {
+			t.Fatalf("Expected a CAS error setting duplicate %s key", k)
+		}
+	}
+	// valid CAS
+	val := "foobar"
+	get, err := cache.Value().CAS(val, val)
+	if err != nil {
+		t.Fatalf("Unexpected error CAS-ing %s: %+v", val, err)
+	}
+	getS := get.(string)
+	if val != getS {
+		t.Fatalf("Expected cached value to be %s, saw %s", val, getS)
+	}
+	// just add Unset for completeness
+	for k := range data {
+		cache.Value().Unset(k)
+		if cache.Value().Has(k) {
+			t.Fatalf("Key %s was unset, should not be returning true on Has call", k)
 		}
 	}
 }
@@ -69,6 +94,7 @@ func TestCacheMapSet(t *testing.T) {
 	}
 }
 
+// Simple callback-based Set, Get, Unset, Refresh tests
 func TestCallSimple(t *testing.T) {
 	callCount := 0
 	call := func() int {
@@ -84,6 +110,9 @@ func TestCallSimple(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("unexpected error setting call key: %+v", err)
+	}
+	if !cache.Has("call") {
+		t.Fatal("call key not in cache?")
 	}
 	valAfterSet := call()
 	if valAfterSet != 1 {
@@ -131,4 +160,68 @@ func TestCallSimple(t *testing.T) {
 		t.Fatalf("Expected error, instead got %#v", gotten)
 	}
 	t.Logf("gotten expected error: %+v", err)
+}
+
+// Function tests key-level overrides, how expired elements are refreshed
+// and whether or not predictable behaviour is observed
+func TestExpireRefreshOnAccess(t *testing.T) {
+	msCall := func() Call {
+		calls := 1
+		return func() (interface{}, error) {
+			r := calls
+			calls++
+			return r, nil
+		}
+	}()
+	noExpiry := func() Call {
+		calls := 1
+		return func() (interface{}, error) {
+			r := calls
+			calls++
+			return r, nil
+		}
+	}()
+	// use overrides
+	cache := New(
+		DefaultRefreshType(RefreshOnAccess),
+		DefaultTTL(ValueExpiryNever),
+	)
+	never, err := cache.Set("never", noExpiry)
+	if err != nil {
+		t.Fatalf("unexpected error setting never key: %+v", err)
+	}
+	ms, err := cache.Set("ms", msCall, SetTTL(time.Millisecond))
+	if err != nil {
+		t.Fatalf("unexpected error setting ms key: %+v", err)
+	}
+	iNever := never.(int)
+	iMS := ms.(int)
+	if iNever != iMS {
+		t.Fatalf("Expected first calls to be equal (%d != %d)", iNever, iMS)
+	}
+	// wait for cache to expire
+	time.Sleep(time.Millisecond)
+	never, _ = cache.Get("never")
+	ms, _ = cache.Get("ms")
+	iNever = never.(int)
+	iMS = ms.(int)
+	if iNever == iMS {
+		t.Fatalf("Expired cache should not match unexpired value (%d == %d)", iMS, iNever)
+	}
+	never, err = cache.Refresh("never")
+	if err != nil {
+		t.Fatalf("error refreshing cache: %+v", err)
+	}
+	iNever = never.(int)
+	if iNever != iMS {
+		t.Fatalf("After refresh, both values should match: %d != %d", iNever, iMS)
+	}
+	// test CAS behaviour with both expired and non-expired values
+	time.Sleep(time.Millisecond)
+	if _, err := cache.CAS("never", noExpiry); err == nil {
+		t.Fatal("CAS call did not result in error when overriding exisiting key")
+	}
+	if _, err := cache.CAS("ms", msCall, SetTTL(time.Millisecond)); err == nil {
+		t.Fatal("CAS call did not result in error when overriding ms key")
+	}
 }

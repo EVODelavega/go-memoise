@@ -33,6 +33,16 @@ func main() {
 		v, err := cache.Value().Get("simpleVal")
 		fmt.Printf("Got %v - err: %v\n", v, err)
 	}
+	// add to cache, but with specific TTL & refresh behaviour
+	cache.Set(
+		"slowCallWithRefresh",
+		func() (interface{}, error) {
+			i := slowCall()
+			return i, nil
+		},
+		memoise.SetTTL(time.Second*10),                  // cache valid for 10 seconds
+		memoise.SetRefreshType(memoise.RefreshOnAccess), // refresh stale values once accessed
+	)
 }
 
 func slowCall() int {

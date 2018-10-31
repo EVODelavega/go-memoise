@@ -269,8 +269,8 @@ func (c *valCache) Set(key string, value interface{}, opts ...EntryConfig) error
 func (c *valCache) Refresh(key string) (interface{}, error) {
 	c.mu.RLock()
 	e, err := c.get(key)
+	c.mu.RUnlock()
 	if err != nil {
-		c.mu.RUnlock()
 		return nil, err
 	}
 	e.mu.Lock()
@@ -278,12 +278,11 @@ func (c *valCache) Refresh(key string) (interface{}, error) {
 	// this is a pointless call
 	if e.ttl == ValueExpiryNever {
 		e.mu.Unlock()
-		c.mu.RUnlock()
 		return ret, nil
 	}
+	// only set TTL if we have to
 	e.item.expires = time.Now().Add(e.ttl)
 	e.mu.Unlock()
-	c.mu.RUnlock()
 	return ret, nil
 }
 
@@ -299,6 +298,7 @@ func (c *valCache) CAS(key string, value interface{}, opts ...EntryConfig) (inte
 	if e, err := c.get(key); err == nil {
 		// we have a duplicate
 		// return existing entry + error
+		c.mu.Unlock()
 		return e.item.val, DuplicateEntryErr
 	}
 	delete(c.entries, key)
