@@ -45,9 +45,15 @@ cache.Value().Set("value", 123)
 
 ## TODO's
 
-Work is currently focussed on the janitor. A component that runs concurrently, periodically checking the values in the cache, and either removing expired values, or refreshing them (depending on how they're configured). This will require a couple of changes. Chief among which: passing in a context (cancelable, ideally), and additional config functions for varargs to specify how the janitor is to interact with the cached values.
+Tests are being added, we're currently covering most of the common calls, and scenario's (Get, Set, refreshing expired values, etc...). The tests are writen on the move (literally, and are quite messy). They need some more structure, and need to be cleaned up.
+We are runnig the tests with the `-race` flag enabled. Race conditions haven't proven to be an issue so far, and we aim to keep it that way.
 
-Tests are pretty much absent ATM, but work has started adding test cases for various scenario's.
+Functionality that needs to be worked on is the janitor component. This means some changes to the package (the `New` func will require a context to be passed). The job of the janitor is to periodically check for expired components and ensure if they're configured as such, this component will refresh the stale values, or remove old values. The janitor does not touch values that are configured to refresh on access, obviously.
+As yet, this component is not used in the package yet, and will be fleshed out at a later point in time.
+
+## Future plans
+
+Though I have been critical about the proposal for generics to be added to the language, I can see the value generics could bring to a package like this. Having the ability to instantiate a cache that stores and yields particular interfaces would eliminate the need for the runtime type assertions, and resulting code-bloat. Not to mention the inherent risks introduced by bypassing the typesystem through the use of `interface{}`.
 
 ## Contributing
 
