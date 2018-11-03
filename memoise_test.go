@@ -225,3 +225,32 @@ func TestExpireRefreshOnAccess(t *testing.T) {
 		t.Fatal("CAS call did not result in error when overriding ms key")
 	}
 }
+
+func TestCheckDuplicates(t *testing.T) {
+	cache := New(
+		DefaultDuplicateCheck(CheckDuplicate),
+	)
+	key := "key"
+	val := 42
+	cb := func() (interface{}, error) {
+		return val, nil
+	}
+	if ival, err := cache.Set(key, cb); err != nil || ival != interface{}(val) {
+		t.Fatalf("set returned an error, or value other than %d (returned %#v, %+v)", val, ival, err)
+	}
+	if err := cache.Value().Set(key, val); err != nil {
+		t.Fatalf("value set returned unexpected error: %+v", err)
+	}
+	if err := cache.Value().Set(key, "new value"); err == nil {
+		t.Fatalf("value set returned no error on duplicate set key %s", key)
+	}
+	ival, err := cache.Set(key, func() (interface{}, error) {
+		return "duplicate", nil
+	})
+	if err == nil {
+		t.Fatalf("set didn't return error when setting duplicate %s", key)
+	}
+	if ival != nil {
+		t.Fatalf("expected failed Set call to retunr nil, instead saw %#v", ival)
+	}
+}

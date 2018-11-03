@@ -176,7 +176,8 @@ func (c *cache) Get(key string) (interface{}, error) {
 	ce.mu.RLock()
 	v, err, exp := ce.item.val, ce.item.err, ce.item.expires
 	// value is still valid, return and be done with it
-	if exp.IsZero() || exp.After(time.Now()) {
+	now := time.Now()
+	if exp.IsZero() || exp.After(now) {
 		ce.mu.RUnlock()
 		// this is really optimistic, we're not handling errors correctly ATM
 		return v, err
@@ -185,6 +186,12 @@ func (c *cache) Get(key string) (interface{}, error) {
 	if ce.rt == RefreshExplicit {
 		ce.mu.RUnlock()
 		return v, ValueExpiredErr
+	}
+	if exp.Before(now) && ce.rt == NoRefresh {
+		ce.mu.RUnlock()
+		c.Unset(key)
+		// this entry is gone now
+		return nil, KeyNotFoundErr
 	}
 	ce.mu.RUnlock()
 	// ignore RefreshAsync for the time being
