@@ -1,6 +1,7 @@
 package memoise
 
 import (
+	"fmt"
 	"testing"
 	"time"
 )
@@ -252,5 +253,131 @@ func TestCheckDuplicates(t *testing.T) {
 	}
 	if ival != nil {
 		t.Fatalf("expected failed Set call to retunr nil, instead saw %#v", ival)
+	}
+}
+
+func TestValueRefresh(t *testing.T) {
+	cache := New(
+		DefaultTTL(time.Millisecond),  // expire values after 1ms
+		DefaultRefreshType(NoRefresh), // don't refresh expired values
+	)
+	const (
+		expireKey = "expires"
+		neverKey  = "never"
+	)
+	val := 42
+	_ = cache.Value().Set(expireKey, val)
+	_ = cache.Value().Set(neverKey, val, SetTTL(ValueExpiryNever))
+	time.Sleep(time.Millisecond)
+	if rVal, err := cache.Value().Refresh(expireKey); err != nil || rVal != interface{}(val) {
+		t.Fatalf("Refreshing expired value %d returned error, or incorrect value (return: %#v, %+v)", val, err, rVal)
+	}
+	if rVal, err := cache.Value().Get(neverKey); err != nil || rVal != interface{}(val) {
+		t.Fatalf("Getting non-expired value %d returned error, or incorrect value (return: %#v, %+v)", val, err, rVal)
+	}
+
+	time.Sleep(time.Millisecond)
+	rVal, err := cache.Value().Get(expireKey)
+	if err == nil {
+		t.Fatalf("expected GET on expired key %s to return error", expireKey)
+	}
+	if rVal != interface{}(val) {
+		t.Fatalf("Expected Get to return error + expired value (actual: %#v, %+v)", rVal, err)
+	}
+	// this is a pointless call, but hey...
+	// both Get and refresh should behave identically
+	gVal, gerr := cache.Value().Get(neverKey)
+	rVal, err = cache.Value().Refresh(neverKey)
+	if err != gerr || gVal != rVal {
+		t.Fatalf("Expected Get and Refresh to both act identically, instead Get returned (%#v, %+v), and Refresh (%#v, %+v)", gVal, gerr, rVal, err)
+	}
+	if err != nil {
+		// in this case both Get and Refresh failed
+		t.Fatalf("Unexpected error in Get/Refresh calls: %+v", err)
+	}
+}
+
+func TestExpiryTypes(t *testing.T) {
+	cache := New(
+		DefaultTTL(time.Millisecond),
+		DefaultRefreshType(NoRefresh),
+	)
+	const (
+		noRefreshK       = "no-refresh"
+		explicitRefreshK = "explicit-refresh"
+	)
+	val := interface{}(42)
+	cb := func() (interface{}, error) {
+		return val, nil
+	}
+	_, _ = cache.Set(noRefreshK, cb)
+	_, _ = cache.Set(explicitRefreshK, cb, SetRefreshType(RefreshExplicit))
+	time.Sleep(time.Millisecond)
+	if _, err := cache.Get(noRefreshK); err != KeyNotFoundErr {
+		t.Fatalf("Expected Get(%s) to return %+v, instead got %+v", noRefreshK, KeyNotFoundErr, err)
+	}
+	if rVal, err := cache.Get(explicitRefreshK); err != ValueExpiredErr || rVal != val {
+		t.Fatalf("expected Get(%s) to return (%#v, %+v), got (%#v, %+v)", explicitRefreshK, val, ValueExpiredErr, rVal, err)
+	}
+}
+
+func TestReturnStaleOnError(t *testing.T) {
+	cache := New(DefaultTTL(time.Millisecond))
+	val := 1
+	callErr := fmt.Errorf("call error")
+	cb := func() (interface{}, error) {
+		if val < 2 {
+			r := interface{}(val)
+			val++
+			return r, nil
+		}
+		return nil, callErr
+	}
+	rVal, err := cache.Set("key", cb, SetCacheType(CacheValueReturnStaleOnError))
+	iVal := rVal.(int)
+	if iVal != 1 || err != nil {
+		t.Fatalf("Expected call to return 1, and no error, instead got %#v, %+v", rVal, err)
+	}
+	time.Sleep(time.Millisecond)
+	// cache should've expired, we have rigged the call to return an error now, too
+	rVal, err = cache.Get("key")
+	if err != callErr {
+		t.Fatalf("Expected Get to return %+v, instead got %+v", callErr, err)
+	}
+	iVal = rVal.(int)
+	if iVal != 1 {
+		t.Fatalf("Expected Get to retunr stale value")
+	}
+}
+
+func TestReturnErrorNotCached(t *testing.T) {
+	cache := New(
+		DefaultTTL(time.Millisecond),
+		DefaultCacheType(CacheValueReturnError),
+	)
+	val := 0
+	callErr := fmt.Errorf("call error")
+	cb := func() (interface{}, error) {
+		val++
+		if (val % 2) == 1 {
+			r := interface{}(val)
+			return r, nil
+		}
+		return nil, callErr
+	}
+	rVal, err := cache.Set("key", cb, SetCacheType(CacheValueReturnStaleOnError))
+	if rVal != interface{}(val) {
+		t.Fatalf("Expected call to return 1, and no error, instead got %#v, %+v", rVal, err)
+	}
+	time.Sleep(time.Millisecond)
+	// cache should've expired, we have rigged the call to return an error now, too
+	rVal, err = cache.Get("key")
+	iVal := rVal.(int) // old value should be 1
+	if err != callErr || iVal != 1 {
+		t.Fatalf("Expected Get to return (nil, %+v), instead got (%#v, %+v)", callErr, rVal, err)
+	}
+	rVal, err = cache.Get("key")
+	if err != nil || rVal != interface{}(val) {
+		t.Fatalf("Expected Get to return (%d, nil), got (%#v, %+v)", val, rVal, err)
 	}
 }

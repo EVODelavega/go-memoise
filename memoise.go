@@ -277,7 +277,7 @@ func (c *valCache) Refresh(key string) (interface{}, error) {
 	c.mu.RLock()
 	e, err := c.get(key)
 	c.mu.RUnlock()
-	if err != nil {
+	if err != nil && err != ValueExpiredErr {
 		return nil, err
 	}
 	e.mu.Lock()
