@@ -44,6 +44,13 @@ func TestCacheScalarValueSet(t *testing.T) {
 		cache.Value().Unset(k)
 		assert.False(t, cache.Value().Has(k))
 	}
+	// get a non-existent key
+	nVal, err := cache.Value().Get("this key doesn't exist")
+	assert.Nil(t, nVal)
+	assert.Equal(t, memoise.ErrKeyNotFound, err)
+	// refresh non-existent key
+	nVal, err = cache.Value().Refresh("this key doesn't exist")
+	assert.Nil(t, nVal)
 }
 
 func TestCacheSliceSet(t *testing.T) {

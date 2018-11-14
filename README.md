@@ -43,17 +43,22 @@ This does look rather messy, and needlessly complex. The cache object therefore 
 cache.Value().Set("value", 123)
 ```
 
+## Oddities in the code
+
+Looking through the code, it might strike some as odd that `defer` isn't being used to unlock mutexes. The reason for this is simple: `defer` isn't free. Though relatively minimal, it does add a couple of nanoseconds to each call. The whole reason to use a caching package like this is to optimise and save time. If the package you're using is relying on `defer` to do its job, then the package you're using for optimisation can be optimised. The functions are all relatively short and simple, the dozen or so extra lines that are added by explicitly releasing the locks are considered to be worth the effort.
+
 ## TODO's
 
-Tests are being added, we're currently covering most of the common calls, and scenario's (Get, Set, refreshing expired values, etc...). The tests are writen on the move (literally, and are quite messy). They need some more structure, and need to be cleaned up.
+* Tests are being added, we're currently covering most of the common calls, and scenario's (Get, Set, refreshing expired values, etc...). The tests are writen on the move (literally, and are quite messy). They need some more structure, and need to be cleaned up.
 We are runnig the tests with the `-race` flag enabled. Race conditions haven't proven to be an issue so far, and we aim to keep it that way.
 
-Functionality that needs to be worked on is the janitor component. This means some changes to the package (the `New` func will require a context to be passed). The job of the janitor is to periodically check for expired components and ensure if they're configured as such, this component will refresh the stale values, or remove old values. The janitor does not touch values that are configured to refresh on access, obviously.
+* Functionality that needs to be worked on is the janitor component. This means some changes to the package (the `New` func will require a context to be passed). The job of the janitor is to periodically check for expired components and ensure if they're configured as such, this component will refresh the stale values, or remove old values. The janitor does not touch values that are configured to refresh on access, obviously.
 As yet, this component is not used in the package yet, and will be fleshed out at a later point in time.
 
 ## Future plans
 
 Though I have been critical about the proposal for generics to be added to the language, I can see the value generics could bring to a package like this. Having the ability to instantiate a cache that stores and yields particular interfaces would eliminate the need for the runtime type assertions, and resulting code-bloat. Not to mention the inherent risks introduced by bypassing the typesystem through the use of `interface{}`.
+Should the generics proposal not go anywhere, I might be tempted to add a generator whith the ability to quickly generate a custom, typed cache, adding functions like `GetInt`, `GetString`, and `GetT` where `T` is a type of your choice. The added value of this is fairly minimal, though, so this is a very low priority.
 
 ## Contributing
 
