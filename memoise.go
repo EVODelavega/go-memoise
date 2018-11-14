@@ -185,13 +185,13 @@ func (c *cache) Get(key string) (interface{}, error) {
 	// value has expired
 	if ce.rt == RefreshExplicit {
 		ce.mu.RUnlock()
-		return v, ValueExpiredErr
+		return v, ErrValueExpired
 	}
 	if exp.Before(now) && ce.rt == NoRefresh {
 		ce.mu.RUnlock()
 		c.Unset(key)
 		// this entry is gone now
-		return nil, KeyNotFoundErr
+		return nil, ErrKeyNotFound
 	}
 	ce.mu.RUnlock()
 	// ignore RefreshAsync for the time being
@@ -206,7 +206,7 @@ func (c *cache) setWithCheck(k string, cb Call, opts ...EntryConfig) (interface{
 	c.mu.Lock()
 	if _, ok := c.entries[k]; ok {
 		c.mu.Unlock()
-		return nil, DuplicateEntryErr
+		return nil, ErrDuplicateEntry
 	}
 	// regular call to set, but we have obtained a lock here...
 	i, err := c.set(k, cb, opts...)
@@ -236,7 +236,7 @@ func (c *cache) set(k string, cb Call, opts ...EntryConfig) (interface{}, error)
 func (c *cache) get(k string) (*centry, error) {
 	e, ok := c.entries[k]
 	if !ok {
-		return nil, KeyNotFoundErr
+		return nil, ErrKeyNotFound
 	}
 	return e, nil
 }
@@ -265,7 +265,7 @@ func (c *valCache) Set(key string, value interface{}, opts ...EntryConfig) error
 	if c.checkDuplicates == CheckDuplicate {
 		if _, ok := c.entries[key]; ok {
 			c.mu.Unlock()
-			return DuplicateEntryErr
+			return ErrDuplicateEntry
 		}
 	}
 	c.set(key, value, opts...)
@@ -277,7 +277,7 @@ func (c *valCache) Refresh(key string) (interface{}, error) {
 	c.mu.RLock()
 	e, err := c.get(key)
 	c.mu.RUnlock()
-	if err != nil && err != ValueExpiredErr {
+	if err != nil && err != ErrValueExpired {
 		return nil, err
 	}
 	e.mu.Lock()
@@ -306,7 +306,7 @@ func (c *valCache) CAS(key string, value interface{}, opts ...EntryConfig) (inte
 		// we have a duplicate
 		// return existing entry + error
 		c.mu.Unlock()
-		return e.item.val, DuplicateEntryErr
+		return e.item.val, ErrDuplicateEntry
 	}
 	delete(c.entries, key)
 	c.set(key, value, opts...)
@@ -323,10 +323,10 @@ func (c *valCache) Unset(key string) {
 func (c *valCache) get(key string) (*vcentry, error) {
 	e, ok := c.entries[key]
 	if !ok {
-		return nil, KeyNotFoundErr
+		return nil, ErrKeyNotFound
 	}
 	if !e.item.expires.IsZero() && e.item.expires.Before(time.Now()) {
-		return e, ValueExpiredErr
+		return e, ErrValueExpired
 	}
 	return e, nil
 }

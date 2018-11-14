@@ -6,10 +6,12 @@ import (
 )
 
 var (
-	// ValueExpiredErr - error returned when RefreshExplicit is set
-	ValueExpiredErr   = errors.New("the cache value has expired")
-	DuplicateEntryErr = errors.New("cache already contains key")
-	KeyNotFoundErr    = errors.New("cache does not contain given key")
+	// ErrValueExpired - error returned when RefreshExplicit is set
+	ErrValueExpired = errors.New("the cache value has expired")
+	// ErrDuplicateEntry - error returned by CAS (or when default is to check duplicates)
+	ErrDuplicateEntry = errors.New("cache already contains key")
+	// ErrKeyNotFound - error returned when getting a key that hasn't been cached
+	ErrKeyNotFound = errors.New("cache does not contain given key")
 )
 
 const (

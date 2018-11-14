@@ -1,9 +1,12 @@
-package memoise
+package memoise_test
 
 import (
 	"fmt"
 	"testing"
 	"time"
+
+	"github.com/EVODelavega/go-memoise"
+	"github.com/stretchr/testify/assert"
 )
 
 func TestCacheScalarValueSet(t *testing.T) {
@@ -13,86 +16,52 @@ func TestCacheScalarValueSet(t *testing.T) {
 		"float":  12.3,
 	}
 	// create new default cache
-	cache := New()
+	cache := memoise.New()
 	// set values:
 	for k, v := range data {
-		err := cache.Value().Set(k, v)
-		if err != nil {
-			t.Fatalf("unexpected error %+v setting %s to %v", err, k, v)
-		}
+		assert.NoError(t, cache.Value().Set(k, v))
 	}
 
 	for k, v := range data {
 		got, err := cache.Value().Get(k)
-		if err != nil {
-			t.Fatalf("unexpected error %+v getting %s", err, k)
-		}
-		if got != v {
-			t.Fatalf("expected %s to return %v, got %v", k, v, got)
-		}
+		assert.NoError(t, err)
+		assert.Equal(t, v, got)
 	}
 
 	// check CAS behaviour:
 	for k, v := range data {
-		if _, err := cache.Value().CAS(k, v); err == nil {
-			t.Fatalf("Expected a CAS error setting duplicate %s key", k)
-		}
+		_, err := cache.Value().CAS(k, v)
+		assert.Error(t, err)
+		assert.Equal(t, memoise.ErrDuplicateEntry, err)
 	}
 	// valid CAS
 	val := "foobar"
 	get, err := cache.Value().CAS(val, val)
-	if err != nil {
-		t.Fatalf("Unexpected error CAS-ing %s: %+v", val, err)
-	}
-	getS := get.(string)
-	if val != getS {
-		t.Fatalf("Expected cached value to be %s, saw %s", val, getS)
-	}
+	assert.NoError(t, err)
+	assert.Equal(t, val, get)
 	// just add Unset for completeness
 	for k := range data {
 		cache.Value().Unset(k)
-		if cache.Value().Has(k) {
-			t.Fatalf("Key %s was unset, should not be returning true on Has call", k)
-		}
+		assert.False(t, cache.Value().Has(k))
 	}
 }
 
 func TestCacheSliceSet(t *testing.T) {
 	data := []int{1, 2, 3}
-	cache := New()
-	if err := cache.Value().Set("slice", data); err != nil {
-		t.Fatalf("Unexpected error setting slice: %+v", err)
-	}
+	cache := memoise.New()
+	assert.NoError(t, cache.Value().Set("slice", data))
 	got, err := cache.Value().Get("slice")
-	if err != nil {
-		t.Fatalf("Unexpected error getting slice: %+v", err)
-	}
-	gotSlice, ok := got.([]int)
-	if !ok {
-		t.Fatal("Could not cast interface to []int")
-	}
-	if len(gotSlice) != len(data) {
-		t.Fatalf("%v does not match %v", gotSlice, data)
-	}
+	assert.NoError(t, err)
+	assert.Equal(t, data, got)
 }
 
 func TestCacheMapSet(t *testing.T) {
 	data := map[string]int{"foo": 1, "bar": 2}
-	cache := New()
-	if err := cache.Value().Set("map", data); err != nil {
-		t.Fatalf("Unexpected error setting map: %+v", err)
-	}
+	cache := memoise.New()
+	assert.NoError(t, cache.Value().Set("map", data))
 	got, err := cache.Value().Get("map")
-	if err != nil {
-		t.Fatalf("Unexpected error getting map: %+v", err)
-	}
-	gotMap, ok := got.(map[string]int)
-	if !ok {
-		t.Fatal("Could not cast interface to map[string]int")
-	}
-	if len(gotMap) != len(data) {
-		t.Fatalf("%v does not match %v", gotMap, data)
-	}
+	assert.NoError(t, err)
+	assert.Equal(t, data, got)
 }
 
 // Simple callback-based Set, Get, Unset, Refresh tests
@@ -104,69 +73,37 @@ func TestCallSimple(t *testing.T) {
 		return r
 	}
 	// cache without expiry
-	cache := New(DefaultTTL(ValueExpiryNever))
+	cache := memoise.New(memoise.DefaultTTL(memoise.ValueExpiryNever))
 	val, err := cache.Set("call", func() (interface{}, error) {
 		i := call()
 		return i, nil
 	})
-	if err != nil {
-		t.Fatalf("unexpected error setting call key: %+v", err)
-	}
-	if !cache.Has("call") {
-		t.Fatal("call key not in cache?")
-	}
+	assert.NoError(t, err)
+	assert.True(t, cache.Has("call"))
 	valAfterSet := call()
-	if valAfterSet != 1 {
-		t.Fatal("Expected callCount to be 1")
-	}
-	iVal := val.(int)
-	if iVal != 0 {
-		t.Fatalf("Expected cached value to be 0: %d instead", iVal)
-	}
+	assert.Equal(t, valAfterSet, 1)
+	assert.Equal(t, val, 0)
 	gotten, err := cache.Get("call")
-	if err != nil {
-		t.Fatalf("unexpected error getting value: %+v", err)
-	}
-	giVal := gotten.(int)
-	if giVal != iVal {
-		t.Fatalf("expected getting %d to equal set value %d", giVal, iVal)
-	}
-	// no second call has occured
-	if valAfterSet != 1 {
-		t.Fatal("Expected callCount to be 1")
-	}
-	if callCount != 2 {
-		t.Fatalf("something is wrong with call func, expected 2, got %d", callCount)
-	}
+	assert.NoError(t, err)
+	// func should be called twice
+	assert.Equal(t, 2, callCount)
 	refresh, err := cache.Refresh("call")
-	if err != nil {
-		t.Fatalf("unexpected error refreshing value: %+v", err)
-	}
-	rVal := refresh.(int)
-	if rVal == iVal {
-		t.Fatal("Refresh didn't call function")
-	}
+	assert.NoError(t, err)
+	assert.NotEqual(t, refresh, val)
 	gotten, err = cache.Get("call")
-	if err != nil {
-		t.Fatalf("unexpected error getting value after refresh: %+v", err)
-	}
-	giVal = gotten.(int)
-	if giVal != rVal {
-		t.Fatalf("refresh val != get value after refresh (%d != %d)", rVal, giVal)
-	}
+	assert.NoError(t, err)
+	assert.Equal(t, refresh, gotten)
 	// test unsetting
 	cache.Unset("call")
 	gotten, err = cache.Get("call")
-	if err == nil {
-		t.Fatalf("Expected error, instead got %#v", gotten)
-	}
-	t.Logf("gotten expected error: %+v", err)
+	assert.Error(t, err)
+	assert.Equal(t, memoise.ErrKeyNotFound, err)
 }
 
 // Function tests key-level overrides, how expired elements are refreshed
 // and whether or not predictable behaviour is observed
 func TestExpireRefreshOnAccess(t *testing.T) {
-	msCall := func() Call {
+	msCall := func() memoise.Call {
 		calls := 1
 		return func() (interface{}, error) {
 			r := calls
@@ -174,7 +111,7 @@ func TestExpireRefreshOnAccess(t *testing.T) {
 			return r, nil
 		}
 	}()
-	noExpiry := func() Call {
+	noExpiry := func() memoise.Call {
 		calls := 1
 		return func() (interface{}, error) {
 			r := calls
@@ -183,201 +120,169 @@ func TestExpireRefreshOnAccess(t *testing.T) {
 		}
 	}()
 	// use overrides
-	cache := New(
-		DefaultRefreshType(RefreshOnAccess),
-		DefaultTTL(ValueExpiryNever),
+	cache := memoise.New(
+		memoise.DefaultRefreshType(memoise.RefreshOnAccess),
+		memoise.DefaultTTL(memoise.ValueExpiryNever),
 	)
 	never, err := cache.Set("never", noExpiry)
-	if err != nil {
-		t.Fatalf("unexpected error setting never key: %+v", err)
-	}
-	ms, err := cache.Set("ms", msCall, SetTTL(time.Millisecond))
-	if err != nil {
-		t.Fatalf("unexpected error setting ms key: %+v", err)
-	}
-	iNever := never.(int)
-	iMS := ms.(int)
-	if iNever != iMS {
-		t.Fatalf("Expected first calls to be equal (%d != %d)", iNever, iMS)
-	}
+	assert.NoError(t, err)
+	ms, err := cache.Set("ms", msCall, memoise.SetTTL(time.Millisecond))
+	assert.NoError(t, err)
+	assert.Equal(t, ms, never)
 	// wait for cache to expire
 	time.Sleep(time.Millisecond)
 	never, _ = cache.Get("never")
 	ms, _ = cache.Get("ms")
-	iNever = never.(int)
-	iMS = ms.(int)
-	if iNever == iMS {
-		t.Fatalf("Expired cache should not match unexpired value (%d == %d)", iMS, iNever)
-	}
+	assert.NotEqual(t, ms, never)
 	never, err = cache.Refresh("never")
-	if err != nil {
-		t.Fatalf("error refreshing cache: %+v", err)
-	}
-	iNever = never.(int)
-	if iNever != iMS {
-		t.Fatalf("After refresh, both values should match: %d != %d", iNever, iMS)
-	}
+	assert.NoError(t, err)
+	assert.Equal(t, never, ms)
 	// test CAS behaviour with both expired and non-expired values
 	time.Sleep(time.Millisecond)
-	if _, err := cache.CAS("never", noExpiry); err == nil {
-		t.Fatal("CAS call did not result in error when overriding exisiting key")
-	}
-	if _, err := cache.CAS("ms", msCall, SetTTL(time.Millisecond)); err == nil {
-		t.Fatal("CAS call did not result in error when overriding ms key")
-	}
+	_, err = cache.CAS("never", noExpiry)
+	assert.Error(t, err)
+	assert.Equal(t, memoise.ErrDuplicateEntry, err)
+	_, err = cache.CAS("ms", msCall, memoise.SetTTL(time.Millisecond))
+	assert.Error(t, err)
+	assert.Equal(t, memoise.ErrDuplicateEntry, err)
 }
 
 func TestCheckDuplicates(t *testing.T) {
-	cache := New(
-		DefaultDuplicateCheck(CheckDuplicate),
+	cache := memoise.New(
+		memoise.DefaultDuplicateCheck(memoise.CheckDuplicate),
 	)
 	key := "key"
 	val := 42
 	cb := func() (interface{}, error) {
 		return val, nil
 	}
-	if ival, err := cache.Set(key, cb); err != nil || ival != interface{}(val) {
-		t.Fatalf("set returned an error, or value other than %d (returned %#v, %+v)", val, ival, err)
-	}
-	if err := cache.Value().Set(key, val); err != nil {
-		t.Fatalf("value set returned unexpected error: %+v", err)
-	}
-	if err := cache.Value().Set(key, "new value"); err == nil {
-		t.Fatalf("value set returned no error on duplicate set key %s", key)
-	}
-	ival, err := cache.Set(key, func() (interface{}, error) {
+	sval, err := cache.Set(key, cb)
+	assert.NoError(t, err)
+	assert.Equal(t, val, sval)
+	assert.NoError(t, cache.Value().Set(key, val))
+	err = cache.Value().Set(key, "new value")
+	assert.Error(t, err)
+	assert.Equal(t, memoise.ErrDuplicateEntry, err)
+	seval, err := cache.Set(key, func() (interface{}, error) {
 		return "duplicate", nil
 	})
-	if err == nil {
-		t.Fatalf("set didn't return error when setting duplicate %s", key)
-	}
-	if ival != nil {
-		t.Fatalf("expected failed Set call to retunr nil, instead saw %#v", ival)
-	}
+	assert.Error(t, err)
+	assert.Equal(t, memoise.ErrDuplicateEntry, err)
+	assert.Nil(t, seval)
 }
 
 func TestValueRefresh(t *testing.T) {
-	cache := New(
-		DefaultTTL(time.Millisecond),  // expire values after 1ms
-		DefaultRefreshType(NoRefresh), // don't refresh expired values
+	cache := memoise.New(
+		memoise.DefaultTTL(time.Millisecond),          // expire values after 1ms
+		memoise.DefaultRefreshType(memoise.NoRefresh), // don't refresh expired values
 	)
 	const (
 		expireKey = "expires"
 		neverKey  = "never"
 	)
 	val := 42
-	_ = cache.Value().Set(expireKey, val)
-	_ = cache.Value().Set(neverKey, val, SetTTL(ValueExpiryNever))
+	assert.NoError(t, cache.Value().Set(expireKey, val))
+	assert.NoError(t, cache.Value().Set(neverKey, val, memoise.SetTTL(memoise.ValueExpiryNever)))
 	time.Sleep(time.Millisecond)
-	if rVal, err := cache.Value().Refresh(expireKey); err != nil || rVal != interface{}(val) {
-		t.Fatalf("Refreshing expired value %d returned error, or incorrect value (return: %#v, %+v)", val, err, rVal)
-	}
-	if rVal, err := cache.Value().Get(neverKey); err != nil || rVal != interface{}(val) {
-		t.Fatalf("Getting non-expired value %d returned error, or incorrect value (return: %#v, %+v)", val, err, rVal)
-	}
+	rVal, err := cache.Value().Refresh(expireKey)
+	assert.NoError(t, err)
+	assert.Equal(t, val, rVal)
+	rVal, err = cache.Value().Get(neverKey)
+	assert.NoError(t, err)
+	assert.Equal(t, val, rVal)
 
 	time.Sleep(time.Millisecond)
-	rVal, err := cache.Value().Get(expireKey)
-	if err == nil {
-		t.Fatalf("expected GET on expired key %s to return error", expireKey)
-	}
-	if rVal != interface{}(val) {
-		t.Fatalf("Expected Get to return error + expired value (actual: %#v, %+v)", rVal, err)
-	}
+	rVal, err = cache.Value().Get(expireKey)
+	assert.Error(t, err)
+	assert.Equal(t, memoise.ErrValueExpired, err)
+	assert.Equal(t, val, rVal)
 	// this is a pointless call, but hey...
 	// both Get and refresh should behave identically
 	gVal, gerr := cache.Value().Get(neverKey)
 	rVal, err = cache.Value().Refresh(neverKey)
-	if err != gerr || gVal != rVal {
-		t.Fatalf("Expected Get and Refresh to both act identically, instead Get returned (%#v, %+v), and Refresh (%#v, %+v)", gVal, gerr, rVal, err)
-	}
-	if err != nil {
-		// in this case both Get and Refresh failed
-		t.Fatalf("Unexpected error in Get/Refresh calls: %+v", err)
-	}
+	// all equal (no error, all values == val)
+	assert.Equal(t, gerr, err)
+	assert.Equal(t, gVal, rVal)
+	assert.NoError(t, err)
+	assert.Equal(t, val, gVal)
 }
 
 func TestExpiryTypes(t *testing.T) {
-	cache := New(
-		DefaultTTL(time.Millisecond),
-		DefaultRefreshType(NoRefresh),
+	cache := memoise.New(
+		memoise.DefaultTTL(time.Millisecond),
+		memoise.DefaultRefreshType(memoise.NoRefresh),
 	)
 	const (
 		noRefreshK       = "no-refresh"
 		explicitRefreshK = "explicit-refresh"
 	)
-	val := interface{}(42)
+	val := 42
 	cb := func() (interface{}, error) {
 		return val, nil
 	}
-	_, _ = cache.Set(noRefreshK, cb)
-	_, _ = cache.Set(explicitRefreshK, cb, SetRefreshType(RefreshExplicit))
+	nrVal, err := cache.Set(noRefreshK, cb)
+	assert.NoError(t, err)
+	assert.Equal(t, val, nrVal)
+	erVal, err := cache.Set(explicitRefreshK, cb, memoise.SetRefreshType(memoise.RefreshExplicit))
+	assert.NoError(t, err)
+	assert.Equal(t, val, erVal)
 	time.Sleep(time.Millisecond)
-	if _, err := cache.Get(noRefreshK); err != KeyNotFoundErr {
-		t.Fatalf("Expected Get(%s) to return %+v, instead got %+v", noRefreshK, KeyNotFoundErr, err)
-	}
-	if rVal, err := cache.Get(explicitRefreshK); err != ValueExpiredErr || rVal != val {
-		t.Fatalf("expected Get(%s) to return (%#v, %+v), got (%#v, %+v)", explicitRefreshK, val, ValueExpiredErr, rVal, err)
-	}
+	_, err = cache.Get(noRefreshK)
+	assert.Equal(t, memoise.ErrKeyNotFound, err)
+	rVal, err := cache.Get(explicitRefreshK)
+	assert.Equal(t, val, rVal)
+	assert.Equal(t, memoise.ErrValueExpired, err)
 }
 
 func TestReturnStaleOnError(t *testing.T) {
-	cache := New(DefaultTTL(time.Millisecond))
+	cache := memoise.New(memoise.DefaultTTL(time.Millisecond))
 	val := 1
 	callErr := fmt.Errorf("call error")
 	cb := func() (interface{}, error) {
 		if val < 2 {
-			r := interface{}(val)
+			r := val
 			val++
 			return r, nil
 		}
 		return nil, callErr
 	}
-	rVal, err := cache.Set("key", cb, SetCacheType(CacheValueReturnStaleOnError))
-	iVal := rVal.(int)
-	if iVal != 1 || err != nil {
-		t.Fatalf("Expected call to return 1, and no error, instead got %#v, %+v", rVal, err)
-	}
+	rVal, err := cache.Set("key", cb, memoise.SetCacheType(memoise.CacheValueReturnStaleOnError))
+	assert.NoError(t, err)
+	// val was incremented when func was called
+	assert.Equal(t, val-1, rVal)
 	time.Sleep(time.Millisecond)
 	// cache should've expired, we have rigged the call to return an error now, too
 	rVal, err = cache.Get("key")
-	if err != callErr {
-		t.Fatalf("Expected Get to return %+v, instead got %+v", callErr, err)
-	}
-	iVal = rVal.(int)
-	if iVal != 1 {
-		t.Fatalf("Expected Get to retunr stale value")
-	}
+	assert.Equal(t, err, callErr)
+	assert.Equal(t, val-1, rVal)
 }
 
 func TestReturnErrorNotCached(t *testing.T) {
-	cache := New(
-		DefaultTTL(time.Millisecond),
-		DefaultCacheType(CacheValueReturnError),
+	cache := memoise.New(
+		memoise.DefaultTTL(time.Millisecond),
+		memoise.DefaultCacheType(memoise.CacheValueReturnError),
 	)
 	val := 0
 	callErr := fmt.Errorf("call error")
 	cb := func() (interface{}, error) {
 		val++
 		if (val % 2) == 1 {
-			r := interface{}(val)
+			r := val
 			return r, nil
 		}
 		return nil, callErr
 	}
-	rVal, err := cache.Set("key", cb, SetCacheType(CacheValueReturnStaleOnError))
-	if rVal != interface{}(val) {
-		t.Fatalf("Expected call to return 1, and no error, instead got %#v, %+v", rVal, err)
-	}
+	rVal, err := cache.Set("key", cb, memoise.SetCacheType(memoise.CacheValueReturnStaleOnError))
+	assert.NoError(t, err)
+	assert.Equal(t, val, rVal)
 	time.Sleep(time.Millisecond)
 	// cache should've expired, we have rigged the call to return an error now, too
 	rVal, err = cache.Get("key")
-	iVal := rVal.(int) // old value should be 1
-	if err != callErr || iVal != 1 {
-		t.Fatalf("Expected Get to return (nil, %+v), instead got (%#v, %+v)", callErr, rVal, err)
-	}
+	assert.Equal(t, err, callErr)
+	// we should get stale value (prior to increment)
+	assert.Equal(t, val-1, rVal)
+	// no error, return new value
 	rVal, err = cache.Get("key")
-	if err != nil || rVal != interface{}(val) {
-		t.Fatalf("Expected Get to return (%d, nil), got (%#v, %+v)", val, rVal, err)
-	}
+	assert.NoError(t, err)
+	assert.Equal(t, val, rVal)
 }
