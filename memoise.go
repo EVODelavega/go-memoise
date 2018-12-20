@@ -1,6 +1,7 @@
 package memoise
 
 import (
+	"context"
 	"sync"
 	"time"
 )
@@ -34,6 +35,9 @@ type cache struct {
 	defaultRT       RefreshType
 	defaultTTL      time.Duration
 	checkDuplicates DuplicateCheck
+	jCycle          time.Duration
+	ctx             context.Context
+	j               *janitor
 }
 
 // cache for values
@@ -46,7 +50,11 @@ type valCache struct {
 
 // default cache setup
 func newCache() *cache {
-	return &cache{
+	return newCacheCtx(context.Background())
+}
+
+func newCacheCtx(ctx context.Context) *cache {
+	c := &cache{
 		mu:              &sync.RWMutex{},
 		entries:         map[string]*centry{},
 		defaultCT:       CacheValueReturnError,
@@ -60,6 +68,19 @@ func newCache() *cache {
 			checkDuplicates: NoDuplicateCheck,
 		},
 	}
+	c.ctx = ctx
+	return c
+}
+
+func (c *cache) startJanitor() {
+	if c.jCycle == TTLJanitorInterval {
+		c.jCycle = c.defaultTTL
+	}
+	if c.jCycle == ValueExpiryNever {
+		c.jCycle = DefaultJanitorInterval
+	}
+	c.j = newJanitor(c.ctx, c, c.jCycle)
+	go c.j.start(c.ctx)
 }
 
 func (c *cache) newEntry(cb Call) *centry {
@@ -108,6 +129,8 @@ func (c *cache) Unset(key string) {
 	c.mu.Lock()
 	// delete - it's a no-op if the element isn't set, no need to check
 	delete(c.entries, key)
+	// might not be needed, but janitor isn't as time critical as the cache itself
+	c.j.dch <- key
 	c.mu.Unlock()
 }
 
@@ -156,7 +179,10 @@ func (c *cache) Refresh(k string) (interface{}, error) {
 }
 
 func (c *cache) autoRefresh(key string, val interface{}, err error) {
+	c.mu.RLock()
 	ce := c.entries[key] // this is guaranteed to work -> the janitor calls this, the key exists
+	c.mu.RUnlock()
+	// the item is still locked ATM, by the janitor
 	if err == nil || ce.ct == CacheAll {
 		ce.item.val = val
 		ce.item.err = err
@@ -220,6 +246,10 @@ func (c *cache) set(k string, cb Call, opts ...EntryConfig) (interface{}, error)
 		o(ent)
 	}
 	ent.initItem()
+	if ent.rt == RefreshAsync {
+		// notify janitor there's something to manage
+		c.j.sch <- k
+	}
 	// No error, or we want to cache errors
 	if ent.item.err == nil || ent.ct == CacheAll {
 		c.entries[k] = ent

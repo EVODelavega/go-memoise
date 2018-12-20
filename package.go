@@ -1,6 +1,7 @@
 package memoise
 
 import (
+	"context"
 	"errors"
 	"time"
 )
@@ -50,6 +51,14 @@ const (
 	NoDuplicateCheck DuplicateCheck = iota
 	// CheckDuplicate - Before setting new cache value, check if key is duplicate
 	CheckDuplicate
+)
+
+const (
+	// DefaultJanitorInterval - Default tick duration for janitor to clean the cache
+	// this only clears out the call-cache!
+	DefaultJanitorInterval = time.Minute
+	// TTLJanitorInterval - Set Janitor interval to equal to items TTL
+	TTLJanitorInterval time.Duration = 0
 )
 
 // Call - function yielding return value + error, these values will be the ones cached
@@ -135,6 +144,13 @@ func DefaultRefreshType(rt RefreshType) CacheConf {
 	}
 }
 
+// SetJanitorInterval - custom janitor interval, defaults to 1 minute
+func SetJanitorInterval(cycle time.Duration) CacheConf {
+	return func(c *cache) {
+		c.jCycle = cycle
+	}
+}
+
 // SetCacheType - Override cache-type on entry level
 func SetCacheType(ct CacheType) EntryConfig {
 	return func(e cacheItem) {
@@ -158,11 +174,17 @@ func SetTTL(ttl time.Duration) EntryConfig {
 
 // New - get new cache object
 func New(opts ...CacheConf) Cache {
-	c := newCache()
+	return NewCtx(context.Background(), opts...)
+}
+
+func NewCtx(ctx context.Context, opts ...CacheConf) Cache {
+	c := newCacheCtx(ctx)
 	for _, o := range opts {
 		o(c)
 	}
 	c.vCache.defaultTTL = c.defaultTTL
 	c.vCache.checkDuplicates = c.checkDuplicates
+	// we have to start the janitor after setting the config correctly
+	c.startJanitor()
 	return c
 }

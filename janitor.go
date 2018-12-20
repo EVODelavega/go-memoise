@@ -47,26 +47,66 @@ func (j *janitor) start(ctx context.Context) {
 				delete(j.managedKeys, k)
 			}
 		case now := <-tick.C:
+			// we don't want to risk a race condition while we're doing maintenance, the channels might be full
+			drainCtx, cfunc := context.WithCancel(ctx)
+			// this ensures the sch and dch don't cause deadlocks
+			// use channel to reassign map within the same routine, too
+			mch := make(chan map[string]struct{}, 1)
+			j.chanDrain(drainCtx, mch)
 			for k := range j.managedKeys {
-				j.c.mu.Lock()
-				if e, ok := j.c.entries[k]; ok {
-					// item valid, still:
-					if e.item.expires.After(now) {
-						j.c.mu.Unlock()
-						continue
-					}
-					if e.rt == NoRefresh {
-						delete(j.c.entries, k)
-						delete(j.managedKeys, k)
-						j.c.mu.Unlock()
-						continue
-					}
-					// @TODO refresh
-					v, err := j.c.entries[k].cb()
-					j.c.autoRefresh(k, v, err)
-					j.c.mu.Unlock()
+				// quickly lock, get value && unlock
+				j.c.mu.RLock()
+				e, ok := j.c.entries[k]
+				j.c.mu.RUnlock()
+				if !ok {
+					// key doesn't exist anymore, remove from managed key set
+					j.dch <- k
+					continue
 				}
+				e.mu.Lock()
+				// this func messes around with the entry, so acquire lock
+				j.refreshItem(e, now, k)
+				e.mu.Unlock()
 			}
+			cfunc() // and cancel the chanDrain routine
+			j.managedKeys = <-mch
+			close(mch)
 		}
 	}
+}
+
+func (j *janitor) chanDrain(ctx context.Context, ch chan<- map[string]struct{}) {
+	mapCpy := map[string]struct{}{}
+	// create a copy of the managedKeys map, avoiding race conditions
+	for k, s := range j.managedKeys {
+		mapCpy[k] = s
+	}
+	// keep consuming channels, update copy of map used in start routine
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				// now the management has completed, we can reassign the updated map
+				ch <- mapCpy
+				return
+			case k := <-j.dch:
+				delete(mapCpy, k)
+			case k := <-j.sch:
+				mapCpy[k] = struct{}{}
+			}
+		}
+	}()
+}
+
+func (j *janitor) refreshItem(e *centry, now time.Time, k string) {
+	if e.item.expires.After(now) {
+		return
+	}
+	if e.rt == NoRefresh {
+		j.dch <- k
+		return
+	}
+	v, err := e.cb()
+	// refresh in cache, we have locked the item
+	j.c.autoRefresh(k, v, err)
 }
